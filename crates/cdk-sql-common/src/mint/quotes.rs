@@ -696,6 +696,10 @@ where
         blinded_messages: &[BlindedMessage],
         operation: &Operation,
     ) -> Result<(), Self::Err> {
+        if blinded_messages.is_empty() {
+            return Ok(());
+        }
+
         let current_time = unix_time();
 
         let mut ordered_messages = blinded_messages.iter().enumerate().collect::<Vec<_>>();
@@ -705,8 +709,48 @@ where
                 .cmp(&right.blinded_secret.to_bytes())
         });
 
+        let blinded_secrets: Vec<Vec<u8>> = ordered_messages
+            .iter()
+            .map(|(_, message)| message.blinded_secret.to_bytes().to_vec())
+            .collect();
+
+        // Outputs that were already signed (c IS NOT NULL) and outputs that
+        // another operation reserved but has not signed yet (c IS NULL) map to
+        // different NUT-00 errors, so tell them apart before inserting.
+        if query(
+            r#"
+            SELECT blinded_message
+            FROM blind_signature
+            WHERE blinded_message IN (:blinded_secrets) AND c IS NOT NULL
+            LIMIT 1
+            "#,
+        )?
+        .bind_vec("blinded_secrets", blinded_secrets.clone())?
+        .pluck(&self.inner)
+        .await?
+        .is_some()
+        {
+            return Err(database::Error::Duplicate);
+        }
+
+        if query(
+            r#"
+            SELECT blinded_message
+            FROM blind_signature
+            WHERE blinded_message IN (:blinded_secrets) AND c IS NULL
+            LIMIT 1
+            "#,
+        )?
+        .bind_vec("blinded_secrets", blinded_secrets)?
+        .pluck(&self.inner)
+        .await?
+        .is_some()
+        {
+            return Err(database::Error::BlindedMessagePending);
+        }
+
         // Insert blinded_messages directly into blind_signature with c = NULL
-        // Let the database constraint handle duplicate detection
+        // Let the database constraint catch a concurrent insert of the same output
         for (i, message) in ordered_messages {
             match query(
                 r#"
@@ -732,10 +776,8 @@ where
             {
                 Ok(_) => continue,
                 Err(database::Error::Duplicate) => {
-                    // Primary key constraint violation - blinded message already exists
-                    // This could be either:
-                    // 1. Already signed (c IS NOT NULL) - definitely an error
-                    // 2. Already pending (c IS NULL) - also an error
+                    // Primary key constraint violation - another operation stored
+                    // this blinded message after the checks above
                     return Err(database::Error::Duplicate);
                 }
                 Err(err) => return Err(err),
