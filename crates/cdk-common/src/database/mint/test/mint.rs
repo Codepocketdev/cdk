@@ -674,6 +674,41 @@ where
     tx.rollback().await.unwrap();
 }
 
+/// Reusing a blinded message that is stored but not signed yet reports it as
+/// pending, not as a duplicate of an already-signed output
+pub async fn reject_pending_blinded_message_as_pending<DB>(db: DB)
+where
+    DB: Database<Error> + KeysDatabase<Err = Error>,
+{
+    let blinded_messages = vec![cashu::BlindedMessage {
+        blinded_secret: SecretKey::generate().public_key(),
+        keyset_id: Id::from_str("001711afb1de20cb").unwrap(),
+        amount: Amount::from(100u64),
+        witness: None,
+    }];
+    let operation = Operation::new_mint(
+        Amount::ZERO,
+        cashu::PaymentMethod::Known(KnownMethod::Bolt11),
+    );
+
+    // Reserve the output without signing it (c stays NULL)
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    tx.add_blinded_messages(None, &blinded_messages, &operation)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let result = tx
+        .add_blinded_messages(None, &blinded_messages, &operation)
+        .await;
+    assert!(
+        matches!(result, Err(Error::BlindedMessagePending)),
+        "unexpected result: {result:?}"
+    );
+    tx.rollback().await.unwrap();
+}
+
 /// Cleanup of melt request after processing
 pub async fn cleanup_melt_request_after_processing<DB>(db: DB)
 where

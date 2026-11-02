@@ -367,6 +367,7 @@ macro_rules! mint_db_test {
             add_melt_request_unique_blinded_messages,
             reject_melt_duplicate_blinded_signature,
             reject_duplicate_blinded_message_db_constraint,
+            reject_pending_blinded_message_as_pending,
             cleanup_melt_request_after_processing,
             add_and_get_melt_quote,
             add_melt_quote_only_once,
