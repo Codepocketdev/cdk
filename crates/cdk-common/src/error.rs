@@ -318,6 +318,9 @@ pub enum Error {
     /// BlindedMessage is already signed
     #[error("Blinded Message is already signed")]
     BlindedMessageAlreadySigned,
+    /// BlindedMessage is reserved by another request but not signed yet
+    #[error("Outputs are pending")]
+    OutputsPending,
     /// Inactive Keyset
     #[error("Inactive Keyset")]
     InactiveKeyset,
@@ -1007,6 +1010,10 @@ impl From<Error> for ErrorResponse {
                 code: ErrorCode::BlindedMessageAlreadySigned,
                 detail: err.to_string(),
             },
+            Error::OutputsPending => ErrorResponse {
+                code: ErrorCode::OutputsPending,
+                detail: err.to_string(),
+            },
             Error::InsufficientFunds => ErrorResponse {
                 code: ErrorCode::TransactionUnbalanced,
                 detail: err.to_string(),
@@ -1269,6 +1276,7 @@ impl From<crate::database::Error> for Error {
                 state => Self::Database(crate::database::Error::InvalidStateTransition(state)),
             },
             crate::database::Error::ConcurrentUpdate => Self::ConcurrentUpdate,
+            crate::database::Error::BlindedMessagePending => Self::OutputsPending,
             db_error => Self::Database(db_error),
         }
     }
