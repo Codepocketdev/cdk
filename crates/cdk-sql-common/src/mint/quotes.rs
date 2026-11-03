@@ -758,6 +758,7 @@ where
                 (blinded_message, amount, keyset_id, c, quote_id, created_time, operation_kind, operation_id, order_index)
                 VALUES
                 (:blinded_message, :amount, :keyset_id, NULL, :quote_id, :created_time, :operation_kind, :operation_id, :order_index)
+            ON CONFLICT DO NOTHING
                 "#,
             )?
             .bind(
@@ -774,6 +775,30 @@ where
             .execute(&self.inner)
             .await
             {
+                Ok(0) => {
+                    // Another operation stored this output after the checks above
+                    // (or is about to commit it): signed => 11003, unsigned => 11004
+                    let signed = query(
+                        r#"
+                        SELECT blinded_message
+                        FROM blind_signature
+                        WHERE blinded_message = :blinded_message AND c IS NOT NULL
+                        LIMIT 1
+                        "#,
+                    )?
+                    .bind(
+                        "blinded_message",
+                        message.blinded_secret.to_bytes().to_vec(),
+                    )
+                    .pluck(&self.inner)
+                    .await?
+                    .is_some();
+                    return Err(if signed {
+                        database::Error::Duplicate
+                    } else {
+                        database::Error::BlindedMessagePending
+                    });
+                }
                 Ok(_) => continue,
                 Err(database::Error::Duplicate) => {
                     // Primary key constraint violation - another operation stored
