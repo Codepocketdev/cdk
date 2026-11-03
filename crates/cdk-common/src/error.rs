@@ -1588,3 +1588,32 @@ impl fmt::Display for ErrorCode {
         write!(f, "{}", self.to_code())
     }
 }
+
+#[cfg(test)]
+mod outputs_pending_tests {
+    use super::*;
+
+    #[test]
+    fn outputs_pending_is_wire_code_11004() {
+        assert_eq!(
+            ErrorResponse::from(Error::OutputsPending).code.to_code(),
+            11004
+        );
+        assert!(matches!(
+            ErrorCode::from_code(11004),
+            ErrorCode::OutputsPending
+        ));
+    }
+
+    #[test]
+    fn pending_blinded_message_db_error_converts_to_outputs_pending() {
+        assert!(matches!(
+            Error::from(crate::database::Error::BlindedMessagePending),
+            Error::OutputsPending
+        ));
+        assert!(matches!(
+            Error::from(crate::database::Error::Duplicate),
+            Error::Database(crate::database::Error::Duplicate)
+        ));
+    }
+}

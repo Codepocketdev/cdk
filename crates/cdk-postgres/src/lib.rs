@@ -471,6 +471,18 @@ mod test {
     }
 
     #[tokio::test]
+    async fn concurrent_reservation_of_same_output_reports_pending() {
+        let test_id = format!(
+            "test_concurrent_reservation_pending_{}",
+            uuid::Uuid::new_v4()
+        );
+        cdk_common::database::mint::test::concurrent_reservation_of_same_output_reports_pending(
+            Arc::new(provide_mint_db(test_id).await),
+        )
+        .await;
+    }
+
+    #[tokio::test]
     async fn concurrent_multi_keyset_spends_use_consistent_lock_order() {
         let test_id = format!(
             "test_concurrent_multi_keyset_spends_{}",

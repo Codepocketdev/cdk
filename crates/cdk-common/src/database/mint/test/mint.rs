@@ -2031,3 +2031,102 @@ pub async fn concurrent_mint_quote_batches_use_consistent_lock_order(db: DynMint
     assert_eq!(second_quotes[0].as_ref().unwrap().id, quote2.id);
     assert_eq!(second_quotes[1].as_ref().unwrap().id, quote1.id);
 }
+
+/// A batch that contains both a signed output and a pending one reports the
+/// signed output (11003), not the pending one
+pub async fn reject_mixed_signed_and_pending_blinded_messages_as_signed<DB>(db: DB)
+where
+    DB: Database<Error> + KeysDatabase<Err = Error>,
+{
+    let keyset_id = Id::from_str("001711afb1de20cb").unwrap();
+    let operation = Operation::new_mint(
+        Amount::ZERO,
+        cashu::PaymentMethod::Known(KnownMethod::Bolt11),
+    );
+    let new_message = || cashu::BlindedMessage {
+        blinded_secret: SecretKey::generate().public_key(),
+        keyset_id,
+        amount: Amount::from(100u64),
+        witness: None,
+    };
+    let pending = new_message();
+    let signed = new_message();
+
+    // Reserve one output without signing it (c stays NULL)
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    tx.add_blinded_messages(None, std::slice::from_ref(&pending), &operation)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    // Store a signature for the other output (c IS NOT NULL)
+    let sig = cashu::BlindSignature {
+        amount: Amount::from(100u64),
+        keyset_id,
+        c: SecretKey::generate().public_key(),
+        dleq: None,
+    };
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    tx.add_blind_signatures(&[signed.blinded_secret], &[sig], None)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let result = tx
+        .add_blinded_messages(None, &[pending, signed], &operation)
+        .await;
+    assert!(
+        matches!(result, Err(Error::Duplicate)),
+        "unexpected result: {result:?}"
+    );
+    tx.rollback().await.unwrap();
+}
+
+/// While one transaction holds a reservation that is not signed yet, a
+/// concurrent request for the same output must see it as pending, not as
+/// already signed
+pub async fn concurrent_reservation_of_same_output_reports_pending(db: DynMintDatabase) {
+    let keyset_id = Id::from_str("001711afb1de20cb").unwrap();
+    let message = cashu::BlindedMessage {
+        blinded_secret: SecretKey::generate().public_key(),
+        keyset_id,
+        amount: Amount::from(100u64),
+        witness: None,
+    };
+    let new_operation = || {
+        Operation::new_mint(
+            Amount::ZERO,
+            cashu::PaymentMethod::Known(KnownMethod::Bolt11),
+        )
+    };
+
+    // First request reserves the output but has not committed yet
+    let mut first_tx = db.begin_transaction().await.unwrap();
+    first_tx
+        .add_blinded_messages(None, std::slice::from_ref(&message), &new_operation())
+        .await
+        .unwrap();
+
+    // Second request tries the same output while the first is still open
+    let second_db = db.clone();
+    let second_message = message.clone();
+    let second = tokio::spawn(async move {
+        let mut tx = second_db.begin_transaction().await.unwrap();
+        let result = tx
+            .add_blinded_messages(None, &[second_message], &new_operation())
+            .await;
+        let _ = tx.rollback().await;
+        result
+    });
+
+    // Give the second request time to pass its checks and reach the insert
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    first_tx.commit().await.unwrap();
+
+    let result = second.await.unwrap();
+    assert!(
+        matches!(result, Err(Error::BlindedMessagePending)),
+        "unexpected result: {result:?}"
+    );
+}

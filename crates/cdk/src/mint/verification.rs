@@ -329,3 +329,20 @@ impl Mint {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod pending_mapping_tests {
+    use super::*;
+
+    #[test]
+    fn add_blinded_messages_errors_map_to_distinct_codes() {
+        assert!(matches!(
+            Mint::map_add_blinded_messages_error(database::Error::Duplicate),
+            Error::BlindedMessageAlreadySigned
+        ));
+        assert!(matches!(
+            Mint::map_add_blinded_messages_error(database::Error::BlindedMessagePending),
+            Error::OutputsPending
+        ));
+    }
+}
