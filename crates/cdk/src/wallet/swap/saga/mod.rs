@@ -714,4 +714,97 @@ mod tests {
         assert_eq!(send_proofs.total_amount().unwrap(), Amount::from(12));
         assert_eq!(send_proofs.len(), 2);
     }
+
+    /// The swap request must stay balanced: inputs minus the swap fee equal
+    /// the send outputs plus the change outputs, with or without the receiver's
+    /// redemption fee.
+    async fn prepared_16_sat_swap(
+        amount: Option<u64>,
+        input_fee_ppk: u64,
+        include_fees: bool,
+    ) -> (Amount, Amount, Amount) {
+        let db = create_test_db().await;
+        let mock_client = Arc::new(MockMintConnector::new());
+        let mut keyset = mock_client.keysets.lock().unwrap()[0].clone();
+        keyset.input_fee_ppk = input_fee_ppk;
+        let keyset_id = keyset.id;
+        mock_client.set_active_keyset(keyset);
+
+        let proof_info = test_proof_info(keyset_id, 16, test_mint_url());
+        db.update_proofs(vec![proof_info], vec![]).await.unwrap();
+        let wallet = create_test_wallet_with_mock(db, mock_client).await;
+
+        let input_proofs = wallet.get_unspent_proofs().await.unwrap();
+        let input_total = input_proofs.total_amount().unwrap();
+        let prepared = SwapSaga::new(&wallet)
+            .prepare(
+                amount.map(Amount::from),
+                SplitTarget::default(),
+                input_proofs,
+                None,
+                false,
+                include_fees,
+                ProofReservation::Reserve,
+            )
+            .await
+            .expect("prepare swap saga");
+
+        let outputs_total = prepared
+            .state_data
+            .pre_swap
+            .swap_request
+            .outputs()
+            .iter()
+            .fold(Amount::ZERO, |acc, o| acc.checked_add(o.amount).unwrap());
+        (input_total, prepared.state_data.pre_swap.fee, outputs_total)
+    }
+
+    #[tokio::test]
+    async fn test_swap_request_is_balanced_with_include_fees() {
+        let (inputs, fee, outputs) = prepared_16_sat_swap(Some(10), 1000, true).await;
+
+        assert_eq!(outputs, inputs.checked_sub(fee).unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_swap_request_is_balanced_without_include_fees() {
+        let (inputs, fee, outputs) = prepared_16_sat_swap(Some(10), 1000, false).await;
+
+        assert_eq!(outputs, inputs.checked_sub(fee).unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_swap_all_request_is_balanced() {
+        let (inputs, fee, outputs) = prepared_16_sat_swap(None, 1000, false).await;
+
+        assert_eq!(outputs, inputs.checked_sub(fee).unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_swap_send_amount_none_stays_none() {
+        let db = create_test_db().await;
+        let mock_client = Arc::new(MockMintConnector::new());
+        let keyset = mock_client.keysets.lock().unwrap()[0].clone();
+        let keyset_id = keyset.id;
+        mock_client.set_active_keyset(keyset);
+        let wallet = create_test_wallet_with_mock(db, mock_client).await;
+        let fee_and_amounts = wallet
+            .get_keyset_fees_and_amounts_by_id(keyset_id)
+            .await
+            .unwrap();
+
+        for include_fees in [false, true] {
+            let swap_all = wallet
+                .swap_send_amount(&keyset_id, &fee_and_amounts, None, include_fees)
+                .await
+                .unwrap();
+            assert_eq!(swap_all, None, "swap all has no send amount");
+        }
+
+        let ten = wallet
+            .swap_send_amount(&keyset_id, &fee_and_amounts, Some(Amount::from(10)), false)
+            .await
+            .unwrap();
+        assert_eq!(ten, Some(Amount::from(10)));
+    }
 }
